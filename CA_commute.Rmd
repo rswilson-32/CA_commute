@@ -1,0 +1,415 @@
+---
+title: 'CA Transportation'
+author: 'Roger Wilson'
+date: "`r format(Sys.Date(), '%D')`"
+output:
+  html_document:
+    toc: yes
+    df_print : paged
+  pdf_document:
+    toc: yes
+    df_print : paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#knitr::opts_chunk$set(tidy=TRUE)
+#knitr::opts_chunk$set(tidy.opts=list(width.cutoff=70))
+```
+
+# Introduction and Data
+
+This data set contains data on modes of transportation to work for Californian Residents aged 16 years and older. Data is from the U.S. Census Bureau, Decennial Census and American Community Survey. The data can be found at [the California Health and Human Services Open Data Website](https://data.chhs.ca.gov/dataset/transportation-to-work-2000-2006-2010/resource/87fa0619-708a-4d92-ba5d-879df338b46e).
+
+According to the source, "Commute trips to work represent 19% of travel miles in the United States," with cars being by far the most used mode of transportation. While cars are convenient, they are one of the deadliest modes of transportation and release harmful emissions into the atmosphere. According to the [California Air Resources Board](https://ww2.arb.ca.gov/), vehicles and cars account for approximately one-third of all of California's CO2 emissions and air pollutants. 
+
+Besides driving, commuters can take public transportation, bike, walk, work from home, or even carpool. All of these methods help take cars off of our roads, which can significantly cut emissions and save money.
+
+For this project, we will look at the distributions of Californians that prefer each mode of transportation for work on the county and city level. 
+
+It's important to note that this data only includes Californians aged 16 years or older that commute to paid work.
+
+```{r}
+# loading data
+library(httr)
+library(readxl)
+GET("https://query.data.world/s/zolw2w2d7avcya3eqyhbtprcscpwjm", 
+    write_disk(tf <- tempfile(fileext = ".xlsx")))
+df <- read_excel(tf)
+```
+
+```{r}
+names(df)
+```
+
+```{r}
+unique(df$reportyear)
+```
+
+```{r}
+# removing rows entirely NA
+library(dplyr)
+
+which(is.na(df$race_eth_code), arr.ind=TRUE)
+
+df <- df %>% slice(-202203)
+```
+
+We don't need every column, so let's remove some of the redundant ones:
+
+```{r}
+# removing unneeded columns
+df = subset(df, select = !(names(df) %in% 
+                             c("ind_id", "ind_definition", "version",
+                               "race_eth_code", "geotypevalue",
+                               "region_code", "CA_decile"))) 
+```
+
+We will be working with the following columns:
+
+| column | description |
+| :-: | :- |
+| reportyear |	Year(s) that the indicator was reported |
+| race_eth_name |	Name of race/ethnic group |
+| geotype |Type of geographic unit |
+| geoname |	Name of geographic unit |
+| county_name |	Name of county that geotype is in |
+| county_fips |	FIPS code of county that geotype is in |
+| region_name |	Metopolitan Planning Organization (MPO)-based region name |
+| mode |	Mode of transportation short name |
+| mode_name |	Mode of transportation long name |
+| pop_mode |	numerator, number of workers (16 years or older) by mode of transportation |
+| pop_total |	denominator,  number of workers (16 years or older) |
+| percent | 	Percent of Residents Mode of Transportation to Work,  Population Aged 16 Years and Older |
+| LL_95CI |	Lower limit of 95% confidence interval |
+| UL_95CI |	Upper limit of 95% confidence interval |
+| percent_se |	Standard error of percent |
+| percent_rse |	Relative standard error (se/percent * 100) expressed as a percent |
+| CA_RR |	Rate ratio to California rate |
+ 
+More information can be found at [this data dictionary](https://data.chhs.ca.gov/dataset/transportation-to-work-2000-2006-2010/resource/87fa0619-708a-4d92-ba5d-879df338b46e).
+
+# County Level Analysis
+
+Let's first look at the data from a county level. Intuitively, If a county is not that densely populated, its residents will be more dependent on cars to commute longer distances. On the other hand, if a county is densely populated, residents may be more willing to bike, walk, or take public transit because their commute is shorter. Let's create a subset of data just with the most recent percentages for all residents in each county.
+
+```{r}
+# focusing just on countries
+df_counties <- df %>%
+  filter(race_eth_name == "Total",
+         geotype == "CO" | geotype == "CA")
+```
+
+```{r}
+head(df_counties)
+```
+```{r}
+library(ggplot2)
+library(maps)
+library(mapdata)
+library(stringr)
+```
+
+```{r}
+# getting borders
+us_states <- map_data("state")
+ca <- subset(us_states, region == "california")
+us_counties <- map_data("county")
+ca_counties <- subset(us_counties, region == "california")
+
+rm(us_states, us_counties)
+```
+
+```{r fig.width = 5, fig.height = 5}
+# creating base map
+ca_base <- ggplot(data = ca, 
+                  mapping = aes(x = long, y = lat, group = group)) + 
+                  coord_fixed(1.3) + 
+                  geom_polygon(color = "black", fill = "gray")
+ca_base
+```
+
+Looks good! Let's add some border FIPs do our data set so that we can graph our county borders.
+
+```{r}
+# adding county borders to df_counties
+ca_counties$subregion <- str_to_title(ca_counties$subregion)
+df_counties <- left_join(df_counties, ca_counties,
+                       by = c("county_name" = "subregion"))
+rm(ca_counties)
+```
+
+From this [Wikipedia on Californian Counties](https://en.wikipedia.org/wiki/List_of_counties_in_California), we can get information on the total area of each county. This will help us graph population densities.
+
+```{r}
+library(XML)
+url <- "https://en.wikipedia.org/wiki/List_of_counties_in_California"
+r <- GET(url)
+doc <- readHTMLTable(doc = content(r, "text"), header = TRUE)
+areas = doc[2]
+```
+
+```{r}
+# getting the correct format
+areas <- data.frame(areas)
+areas <- areas %>%
+  select("X..County", "X..Area.6.")
+areas <- areas %>%
+  rename("County" = "X..County",
+         "Area_sqm" = "X..Area.6.") %>%
+  mutate_at("County", str_replace, " County", "") %>%
+  mutate_at("Area_sqm", str_replace, ",", "") %>%
+  mutate(Area_sqm = str_extract(Area_sqm, "^\\w+"))
+
+areas$Area_sqm <- as.numeric(areas$Area_sqm)
+head(areas)
+```
+
+```{r}
+df_counties <- left_join(df_counties, areas,
+                       by = c("county_name" = "County"))
+```
+
+```{r fig.width = 10, fig.height = 7}
+# color palette
+palette <- colorRampPalette(c("yellow", "purple"))(20)
+
+# adding data onto our CA base map
+ca_base + 
+      geom_polygon(data = df_counties %>% filter(reportyear == "2008-2010",
+                                                 geotype == "CO"),
+                   aes(fill = pop_total / Area_sqm), color = "white") +
+      geom_polygon(color = "black", fill = NA) +  
+      scale_fill_gradientn(colours = palette, trans = "log10",
+                           name = "People per Square Mile") + 
+  ggtitle(label = "Population Density by California County",
+          subtitle = "2008-2010, 16 and Older") + 
+  theme_void()
+```
+
+We can see that Southern California, particularly Los Angeles, as well as the Bay Area, are the most densely populated areas of the state. We'll keep this in mind as we now visualize car dependency for the most populous cities in California.
+
+# City Level Analysis
+
+```{r}
+# dataset of CA cities
+df_cities <- df %>%
+  filter(grepl('city', geoname) | geoname == "California",
+         geotype == "CA" | geotype == "PL",
+         race_eth_name == "Total")
+
+df_cities <- df_cities %>%
+      mutate_at("geoname", str_replace, " city", "")
+```
+
+```{r}
+# longitude and latitude of CA cities
+ca_cities <- us.cities %>%
+  filter(country.etc == "CA")
+```
+
+```{r}
+ca_cities <- ca_cities %>%
+      mutate_at("name", str_replace, " CA", "")
+
+ca_cities = subset(ca_cities, select = !(names(ca_cities) %in% c("country.etc", "pop", "capital"))) 
+
+ca_cities = rbind(ca_cities, c("California", NA, NA))
+ca_cities$lat <- as.numeric(ca_cities$lat)
+ca_cities$long <- as.numeric(ca_cities$long)
+```
+
+```{r}
+head(ca_cities)
+```
+
+```{r}
+# joining
+df_cities <- inner_join(df_cities, ca_cities,
+                       by = c("geoname" = "name"))
+
+rm(ca_cities)
+```
+
+Our new data set has information on the 193 most populous cities in CA. Let's visualize the percent of people that drive a car to work.
+
+```{r}
+names(df_cities)
+```
+
+```{r fig.width = 10, fig.height = 7}
+library(viridisLite)
+
+ggplot(data = df_cities %>% filter(mode == "CARTOTAL",
+                                   geotype == "PL",
+                                   reportyear == "2008-2010"), 
+       aes(x = long, y = lat)) + 
+  borders("state", "California") + 
+  geom_point(aes(col = percent, size = pop_total)) + 
+  coord_fixed(1.3) + 
+  scale_color_gradientn(colors = viridis(20, option = "turbo")) +
+  scale_size_continuous(name = "total population") + 
+  ggtitle(label = "Percent of Residents who Drive Alone to Work",
+          subtitle = "2008-2010, Major Californian Cities, 16 and Older") + 
+  theme_void()
+```
+
+The Bay Area, specifically San Francisco, has the lowest percentage of Californians that drive to work. Los Angeles is also not as car dependent as the rest of Southern California. Let's zoom in to Southern California so that the area is more visible.
+
+```{r fig.width = 10, fig.height = 7}
+ggplot(data = df_cities %>% filter(region_name == "Southern California" |
+                                   region_name == "San Diego",
+                             mode == "CARTOTAL",
+                             geotype == "PL",
+                             reportyear == "2008-2010"), 
+       aes(x = long, y = lat)) + 
+  borders("state", "California") + 
+  geom_point(aes(col = percent, size = pop_total)) + 
+  scale_color_gradientn(colors = viridis(20, option = "turbo")) +
+  coord_fixed(xlim = c(-119.5  , -116.0),  ylim = c(32.5, 35)) + 
+  scale_size_continuous(trans = "log10", name = "total population") +
+  scale_size(range = c(3, 15)) + 
+  ggtitle(label = "Percent of Residents who Drive Alone to Work, 
+          Southern California and San Diego Region",
+          subtitle = "2008-2010, Major Californian Cities, 16 and Older") + 
+  theme_void()
+```
+
+It seems that Californians are very dependent on cars for commuting. Los Angeles, the largest circle, is the least dependent city. It also appears that most of the coastal cities don't commute as much with cars to work. We can find the percentage of residents that drive to work:
+
+```{r}
+df %>%
+  filter(reportyear == "2008-2010",
+         race_eth_name == "Total",
+         geoname == "California",
+         mode == "CARTOTAL") %>%
+  select(reportyear, percent)
+```
+84.6% of Californians drive for their commute. Now, let's see which California cities are the most and least dependent on cars.
+
+# A Closer Look
+
+```{r}
+df_cities %>%
+    filter(mode == "CARTOTAL",
+           geotype == "PL",
+           reportyear == "2008-2010") %>%
+  select(geoname, region_name, mode, pop_total, percent) %>%
+  arrange(desc(percent)) %>%
+  head(10)
+```
+
+Lancaster has the highest proportion of residents aged 16 and older that commute to work. And nine out of the ten most car dependent cities are in the Southern California or San Joaquin Valley regions.
+
+```{r}
+df_cities %>%
+  filter(mode == "CARTOTAL",
+         geotype == "PL",
+         reportyear == "2008-2010") %>%
+  select(geoname, region_name, mode, pop_total, percent) %>%
+  arrange(percent) %>%
+  head(10)
+```
+
+Berkeley is the least car dependent city in California, with only 44.3% of its adult residents driving to work. A majority of these cities are also in the Bay Area.
+
+```{r fig.width = 10, fig.height = 7}
+# cities with the greatest percentage increase
+least_df <- df_cities %>% 
+         filter(geoname %in% c("Berkeley", "San Francisco", "Davis", 
+                               "Oakland", "Santa Cruz", "California"),
+                (mode != "CARTOTAL"),
+                reportyear == "2008-2010")
+
+least_df$geoname = factor(least_df$geoname, 
+                          levels = c("Berkeley", "San Francisco", "Davis",
+                                     "Oakland", "Santa Cruz", "California"))
+
+ggplot(data = least_df, 
+       aes(x = geoname, y = percent, fill = mode, order = percent)) + 
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(round(percent, 2), "%")), 
+            position = position_stack(vjust = 0.5), size = 2)  + 
+  xlab("city") + 
+  ggtitle(label = "Mode of Transportation to Work, Least Car Dependency", subtitle = "2008-2010, Total Population 16 and Older") + 
+  theme_classic()
+```
+
+A majority of commuters in Berkeley and San Francisco take public transportation or carpool to work, far above the state-wide averages. It's also interesting that 19% of commuters in Davis bike to work, then the national average is only 1%! 
+
+Probably and equally as intriguing question, however, is which cities have improved their environmentally friendly commuting habits? We can keep track of the cities where the percentage of residents aged 16 and older that bike, walk, take public transportation, or work from home have increased the most from 2000 to 2010.
+
+```{r}
+percent_2000 <- df_cities %>%
+  filter(race_eth_name == "Total",
+         mode == "CARTOTAL",
+         reportyear == "2000") %>%
+  select(geoname, region_name, percent) %>%
+  rename("percent_2000" = "percent")
+
+percent_2010 <- df_cities %>%
+  filter(race_eth_name == "Total",
+         mode == "CARTOTAL",
+         reportyear == "2006-2010") %>%
+  select(geoname, percent) %>%
+  rename("percent_2010" = "percent")
+
+percent_df <- inner_join(percent_2000, percent_2010, by = "geoname")
+
+percent_df <- percent_df %>%
+  mutate(percent_2000 = 100 - percent_2000) %>%
+  mutate(percent_2010 = 100 - percent_2010) %>%
+  mutate(percent_change = percent_2010 - percent_2000)
+```
+
+```{r}
+percent_df %>%
+  arrange(desc(percent_change)) %>%
+  head(10)
+```
+
+Merced tops our list, with an almost 7% increase in residents ditching cars for work from 2000 to 2010 (In 2005, a new UC campus was built in Merced: could the emergence of a college scene have spurred this?) 
+
+We can visualize these trends over time as well.
+
+```{r fig.width = 10, fig.height = 7}
+# cities with the greatest percentage increase
+top <- c(percent_df[percent_df$percent_change > 5.7, ]$geoname, "California")
+
+ggplot(data = df_cities %>%
+         filter(geoname %in% top,
+                race_eth_name == "Total",
+                mode == "CARTOTAL",
+                reportyear != "2006-2010"), 
+  aes(x = reportyear, y = 100 - percent, group = geoname, color = factor(geoname))) + 
+  geom_line(size = 2) + 
+  ylab("percent") + 
+  ggtitle(label = "Percentage of Residents", subtitle = "Walk, Bike, Public Transportation, Work from Home") + 
+  theme_classic()
+```
+
+Overall, the percent of Californians taking alternative modes of transportation to work had steadily increased from 2000 to 2010. Merced had the steepest growth, but was already a relatively car-free city. The other cities with the fastest transition interestingly all originally had a percentage lower than the state average.  
+
+# Wrapping Up
+
+This project was very interesting. I got a lot of practice working with dplyr, graphing locations, organizing data sets, and so much more. 
+
+It's important to note that the latest data in this data set is from the 2010 census, which was 12 years ago. It would be fun to find more recent data to see if there are any significant changes (gas prices, for example, are a record high: how does that affect the average commute?) Our data also focuses only on commutes for Californians with paid work aged 16 and older. The data excludes driving for school, errands, vacations, and more.
+
+Our analysis of the 200 most populated Californian cities helps shed some light on how car dependent our state is. Many cities don't a great public bus system. Others have so few sidewalks that walking or biking to work is just impossible. Still, cities have been improving accessibility to more environmentally friendly and economical modes of transportation. 
+
+This data set was accessed from [the California Health and Human Services Open Data Website](https://data.chhs.ca.gov/dataset/transportation-to-work-2000-2006-2010/resource/87fa0619-708a-4d92-ba5d-879df338b46e). They provided amazing data dictionaries, narrative examples, research sources, and so much more. 
+
+[Eric C. Anderson's github repository](https://eriqande.github.io/rep-res-web/lectures/making-maps-with-R.html) on making maps in R was an incredible source. I used this reference for all of my ggplot maps.
+
+I used this [Wikipedia article on Californian counties](https://en.wikipedia.org/wiki/List_of_counties_in_California) for more great background information and its tables.
+
+
+
+
+
+
+
+
+
+
