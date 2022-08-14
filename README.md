@@ -1,6 +1,6 @@
 # CA_commute
 
-<img src='traffic.png' height = "300" />
+<img src='traffic.jpg' height = "300" />
 
 This data set contains data on modes of transportation to work for Californian Residents aged 16 years and older. Data is from the U.S. Census Bureau, Decennial Census and American Community Survey.
 
